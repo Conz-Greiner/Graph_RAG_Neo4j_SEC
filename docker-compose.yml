@@ -1,0 +1,213 @@
+# docker-compose.yml
+# Agentic Graph-RAG infrastructure stack.
+#
+# Bring up:  docker compose up -d --build
+# Tear down: docker compose down -v   (removes volumes)
+#
+# GPU workloads (vLLM, embeddings) require the NVIDIA Container Toolkit
+# installed on the host. See README for details.
+
+name: agentic-graph-rag
+
+x-common-env: &common-env
+  TZ: UTC
+  PYTHONDONTWRITEBYTECODE: "1"
+  PYTHONUNBUFFERED: "1"
+
+services:
+  # --------------------------------------------------------------------------
+  # Qdrant — vector store for chunks and community summaries
+  # --------------------------------------------------------------------------
+  qdrant:
+    image: qdrant/qdrant:v1.11.4
+    container_name: agr-qdrant
+    restart: unless-stopped
+    ports:
+      - "${QDRANT_HTTP_PORT:-6333}:6333"
+      - "${QDRANT_GRPC_PORT:-6334}:6334"
+    environment:
+      <<: *common-env
+      QDRANT__SERVICE__GRPC_PORT: "6334"
+      QDRANT__STORAGE__STORAGE_PATH: /qdrant/storage
+      QDRANT__STORAGE__ON_DISK_PAYLOAD: "true"
+    volumes:
+      - qdrant_data:/qdrant/storage
+    healthcheck:
+      test: ["CMD-SHELL", "wget --quiet --spider http://localhost:6333/healthz || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+          cpus: "2.0"
+    networks:
+      - agr-net
+
+  # --------------------------------------------------------------------------
+  # Neo4j — graph store for entities, relations, and community structure
+  # --------------------------------------------------------------------------
+  neo4j:
+    image: neo4j:5.24-community
+    container_name: agr-neo4j
+    restart: unless-stopped
+    ports:
+      - "${NEO4J_HTTP_PORT:-7474}:7474"
+      - "${NEO4J_BOLT_PORT:-7687}:7687"
+    environment:
+      <<: *common-env
+      NEO4J_AUTH: "${NEO4J_USER:-neo4j}/${NEO4J_PASSWORD:-changeme}"
+      NEO4J_dbms_memory_heap_initial__size: 512m
+      NEO4J_dbms_memory_heap_max__size: 1G
+      NEO4J_dbms_memory_pagecache_size: 512m
+      NEO4J_dbms_security_procedures_unrestricted: "apoc.*"
+      NEO4J_dbms_security_procedures_allowlist: "apoc.*"
+      NEO4J_PLUGINS: '["apoc"]'
+      NEO4J_ACCEPT_LICENSE_AGREEMENT: "yes"
+    volumes:
+      - neo4j_data:/data
+      - neo4j_logs:/logs
+      - neo4j_plugins:/plugins
+    healthcheck:
+      test: ["CMD-SHELL", "cypher-shell -u $${NEO4J_USER:-neo4j} -p $${NEO4J_PASSWORD:-changeme} 'RETURN 1' || exit 1"]
+      interval: 20s
+      timeout: 10s
+      retries: 10
+      start_period: 60s
+    deploy:
+      resources:
+        limits:
+          memory: 3G
+          cpus: "2.0"
+    networks:
+      - agr-net
+
+  # --------------------------------------------------------------------------
+  # vLLM — OpenAI-compatible LLM serving
+  # --------------------------------------------------------------------------
+  vllm:
+    image: vllm/vllm-openai:v0.6.3.post1
+    container_name: agr-vllm
+    restart: unless-stopped
+    ports:
+      - "${VLLM_PORT:-8000}:8000"
+    environment:
+      <<: *common-env
+      HUGGING_FACE_HUB_TOKEN: "${HF_TOKEN:-}"
+      VLLM_WORKER_MULTIPROC_METHOD: "spawn"
+    command: >
+      --model ${LLM_MODEL:-Qwen/Qwen2.5-14B-Instruct}
+      --served-model-name ${LLM_MODEL:-Qwen/Qwen2.5-14B-Instruct}
+      --host 0.0.0.0
+      --port 8000
+      --dtype auto
+      --max-model-len 8192
+      --gpu-memory-utilization 0.90
+      --tensor-parallel-size ${VLLM_TP_SIZE:-1}
+      --enable-prefix-caching
+      --disable-log-requests
+    volumes:
+      - hf_cache:/root/.cache/huggingface
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: ${VLLM_GPU_COUNT:-1}
+              capabilities: [gpu]
+        limits:
+          memory: 32G
+          cpus: "8.0"
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=5)\" || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 20
+      start_period: 180s
+    networks:
+      - agr-net
+
+  # --------------------------------------------------------------------------
+  # App — FastAPI + Streamlit + ingestion/retrieval/agent logic
+  # --------------------------------------------------------------------------
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: agr-app:latest
+    container_name: agr-app
+    restart: unless-stopped
+    depends_on:
+      qdrant:
+        condition: service_healthy
+      neo4j:
+        condition: service_healthy
+      vllm:
+        condition: service_healthy
+    ports:
+      - "${API_PORT:-8080}:8080"
+      - "${STREAMLIT_PORT:-8501}:8501"
+    environment:
+      <<: *common-env
+      AGR_ENVIRONMENT: "${AGR_ENVIRONMENT:-production}"
+      AGR_DEBUG: "${AGR_DEBUG:-false}"
+      AGR_LOG_LEVEL: "${AGR_LOG_LEVEL:-INFO}"
+      AGR_LOG_FORMAT: "${AGR_LOG_FORMAT:-json}"
+      AGR_LLM__BASE_URL: "http://vllm:8000/v1"
+      AGR_LLM__MODEL_NAME: "${LLM_MODEL:-Qwen/Qwen2.5-14B-Instruct}"
+      AGR_LLM__API_KEY: "${LLM_API_KEY:-EMPTY}"
+      AGR_QDRANT__HOST: "qdrant"
+      AGR_QDRANT__PORT: "6333"
+      AGR_NEO4J__URI: "bolt://neo4j:7687"
+      AGR_NEO4J__USER: "${NEO4J_USER:-neo4j}"
+      AGR_NEO4J__PASSWORD: "${NEO4J_PASSWORD:-changeme}"
+      AGR_LANGSMITH__ENABLED: "${LANGSMITH_ENABLED:-false}"
+      AGR_LANGSMITH__API_KEY: "${LANGSMITH_API_KEY:-}"
+      AGR_LANGSMITH__PROJECT: "${LANGSMITH_PROJECT:-agentic-graph-rag}"
+    env_file:
+      - .env
+    volumes:
+      - ./src:/app/src
+      - ./config:/app/config
+      - ./tests:/app/tests
+      - upload_data:/app/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8080/health || exit 1"]
+      interval: 20s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: 8G
+          cpus: "4.0"
+    networks:
+      - agr-net
+
+# ----------------------------------------------------------------------------
+# Volumes
+# ----------------------------------------------------------------------------
+volumes:
+  qdrant_data:
+    driver: local
+  neo4j_data:
+    driver: local
+  neo4j_logs:
+    driver: local
+  neo4j_plugins:
+    driver: local
+  hf_cache:
+    driver: local
+  upload_data:
+    driver: local
+
+# ----------------------------------------------------------------------------
+# Networks
+# ----------------------------------------------------------------------------
+networks:
+  agr-net:
+    driver: bridge
+    name: agr-net
