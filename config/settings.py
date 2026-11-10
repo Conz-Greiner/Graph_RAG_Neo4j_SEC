@@ -20,6 +20,7 @@ from pydantic import (
     SecretStr,
     field_validator,
     model_validator,
+    ConfigDict,
 )
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -29,6 +30,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 # ---------------------------------------------------------------------------
 class LLMSettings(BaseModel):
     """Settings for the generative LLM served via vLLM."""
+    model_config = ConfigDict(frozen=True)  # Safe and highly performant in 2.14+
 
     provider: Literal["openai_compatible", "anthropic", "azure"] = Field(
         default="openai_compatible",
@@ -45,6 +47,19 @@ class LLMSettings(BaseModel):
     model_name: str = Field(
         default="Qwen/Qwen2.5-14B-Instruct",
         description="Model identifier as registered in vLLM.",
+    )
+
+    enable_auto_tool_choice: bool = Field(
+        default=True,
+        description="Enables vLLM server-side automatic tool choice parsing."
+    )
+    tool_call_parser: str = Field(
+        default="qwen3_coder",
+        description="vLLM parser for Qwen tool calling format."
+    )
+    reasoning_parser: str = Field(
+        default="qwen3",
+        description="vLLM parser for Qwen reasoning/thinking tokens."
     )
     temperature: float = Field(default=0.1, ge=0.0, le=2.0)
     top_p: float = Field(default=0.9, ge=0.0, le=1.0)
