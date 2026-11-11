@@ -1,14 +1,14 @@
 # --- LangChain / orchestration ---
-langgraph==1.2.16
-langchain==1.4.8
-langchain-core==1.7.5
-langchain-openai==1.7.0
-langchain-community==0.4.2
-langchain-qdrant==1.1.0
-langchain-neo4j==0.11.0
-langsmith==0.14.15
-openai==3.49.0
-httpx==0.28.1
+langgraph
+langchain
+langchain-core
+langchain-openai
+langchain-community
+langchain-qdrant
+langchain-neo4j
+langsmith
+openai
+httpx
 
 # --- Datastores ---
 qdrant-client==1.20.0
