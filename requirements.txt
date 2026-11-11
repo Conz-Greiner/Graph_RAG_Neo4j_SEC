@@ -1,62 +1,46 @@
-# ============================================================================
-# Agentic Graph-RAG — Updated Dependencies (Late 2026)
-# ============================================================================
-
-# --- Orchestration & LLM Integration (LangChain 1.x Ecosystem) ---
-langgraph==1.2.18
-langchain==1.4.7
-langchain-core==1.7.0
-langchain-openai==1.7.3
-langchain-community==1.0.2
-langchain-qdrant==0.2.0
-langchain-neo4j==0.2.0
-langsmith==0.3.15
-
-# --- LLM Client ---
-openai==1.90.0
+# --- LangChain / orchestration ---
+langgraph==1.2.16
+langchain==1.4.8
+langchain-core==1.7.5
+langchain-openai==1.7.0
+langchain-community==0.4.2
+langchain-qdrant==1.1.0
+langchain-neo4j==0.11.0
+langsmith==0.14.15
+openai==3.49.0
 httpx==0.28.1
 
-# --- Vector & Graph Stores ---
+# --- Datastores ---
 qdrant-client==1.20.0
 neo4j==6.4.1
 
-# --- Embeddings, Reranking & ML ---
+# --- Models / embeddings ---
 sentence-transformers==6.2.0
-FlagEmbedding==1.2.11
-torch==2.5.1
-transformers==4.57.3
+FlagEmbedding==1.4.2
+torch==2.15.0
+transformers==5.22.1
 
-# --- PDF Parsing & Data Ingestion ---
-marker-pdf==2.1.0
-pypdf==5.1.0
-sec-edgar-downloader==5.0.2
-beautifulsoup4==4.12.3
-lxml==5.3.0
+# --- Parsing ---
+marker-pdf==2.0.0
+pymupdf==2.1
+sec-edgar-downloader==5.1.0
 
-# --- API & UI ---
-fastapi==0.162.0
-uvicorn[standard]==0.34.0
-pydantic==2.14.2
-pydantic-settings==2.8.0
-python-dotenv==1.0.1
-streamlit==1.45.0
-python-multipart==0.0.12
-sse-starlette==2.2.1
+# --- Web / API ---
+fastapi==0.162.3
+uvicorn[standard]==0.54.0
+sse-starlette==3.6.0
+python-multipart==0.0.33
+streamlit==1.67.0
+pydantic==2.14.3
+pydantic-settings==2.16.2
 
-# --- Logging & Observability ---
-structlog==24.4.0
-rich==13.9.4
+# --- Retrieval extras ---
+rank-bm25==0.2.2
+networkx==3.7
 
-# --- Evaluation ---
+# --- Reliability / eval / test ---
+tenacity==9.2.1
 ragas==0.4.3
-datasets==3.1.0
-
-# --- Utilities & Testing ---
-tenacity==9.0.0
-tqdm==4.67.0
-numpy==1.26.4
-pandas==2.2.3
-tiktoken==0.8.0
-pytest==8.3.3
-pytest-asyncio==0.24.0
-pytest-cov==6.0.0
+structlog==26.1.0
+pytest==9.2.0
+pytest-asyncio==1.4.1

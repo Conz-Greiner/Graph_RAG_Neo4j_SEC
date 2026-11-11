@@ -1,159 +1,147 @@
-# docker-compose.yml
-# Agentic Graph-RAG infrastructure stack.
-#
-# Bring up:  docker compose up -d --build
-# Tear down: docker compose down -v   (removes volumes)
-#
-# GPU workloads (vLLM, embeddings) require the NVIDIA Container Toolkit
-# installed on the host. See README for details.
-
-name: agentic-graph-rag
-
-x-common-env: &common-env
-  TZ: UTC
-  PYTHONDONTWRITEBYTECODE: "1"
-  PYTHONUNBUFFERED: "1"
+version: '3.9'
 
 services:
-  # --------------------------------------------------------------------------
-  # Qdrant — vector store for chunks and community summaries
-  # --------------------------------------------------------------------------
   qdrant:
-    image: qdrant/qdrant:v1.11.4
-    container_name: agr-qdrant
-    restart: unless-stopped
+    image: qdrant/qdrant:v1.11.3
     ports:
-      - "${QDRANT_HTTP_PORT:-6333}:6333"
-      - "${QDRANT_GRPC_PORT:-6334}:6334"
-    environment:
-      <<: *common-env
-      QDRANT__SERVICE__GRPC_PORT: "6334"
-      QDRANT__STORAGE__STORAGE_PATH: /qdrant/storage
-      QDRANT__STORAGE__ON_DISK_PAYLOAD: "true"
+      - "6333:6333"
+      - "6334:6334"
     volumes:
-      - qdrant_data:/qdrant/storage
+      - qdrant_storage:/qdrant/storage
     healthcheck:
-      test: ["CMD-SHELL", "wget --quiet --spider http://localhost:6333/healthz || exit 1"]
-      interval: 15s
+      test: ["CMD", "curl", "-f", "http://localhost:6333/healthz"]
+      interval: 10s
       timeout: 5s
-      retries: 10
-      start_period: 20s
-    deploy:
-      resources:
-        limits:
-          memory: 4G
-          cpus: "2.0"
-    networks:
-      - agr-net
-
-  # --------------------------------------------------------------------------
-  # Neo4j — graph store for entities, relations, and community structure
-  # --------------------------------------------------------------------------
-  neo4j:
-    image: neo4j:5.24-community
-    container_name: agr-neo4j
+      retries: 5
     restart: unless-stopped
+
+  neo4j:
+    image: neo4j:5-community
     ports:
-      - "${NEO4J_HTTP_PORT:-7474}:7474"
-      - "${NEO4J_BOLT_PORT:-7687}:7687"
+      - "7474:7474"
+      - "7687:7687"
     environment:
-      <<: *common-env
-      NEO4J_AUTH: "${NEO4J_USER:-neo4j}/${NEO4J_PASSWORD:-changeme}"
-      NEO4J_dbms_memory_heap_initial__size: 512m
-      NEO4J_dbms_memory_heap_max__size: 1G
-      NEO4J_dbms_memory_pagecache_size: 512m
-      NEO4J_dbms_security_procedures_unrestricted: "apoc.*"
-      NEO4J_dbms_security_procedures_allowlist: "apoc.*"
-      NEO4J_PLUGINS: '["apoc"]'
-      NEO4J_ACCEPT_LICENSE_AGREEMENT: "yes"
+      - NEO4J_AUTH=neo4j/password
+      - NEO4J_PLUGINS=["apoc"]
+      - NEO4J_apoc_export_file_enabled=true
+      - NEO4J_apoc_import_file_enabled=true
+      - NEO4J_apoc_import_file_use__neo4j__config=true
     volumes:
       - neo4j_data:/data
       - neo4j_logs:/logs
       - neo4j_plugins:/plugins
     healthcheck:
-      test: ["CMD-SHELL", "cypher-shell -u $${NEO4J_USER:-neo4j} -p $${NEO4J_PASSWORD:-changeme} 'RETURN 1' || exit 1"]
-      interval: 20s
-      timeout: 10s
-      retries: 10
-      start_period: 60s
-    deploy:
-      resources:
-        limits:
-          memory: 3G
-          cpus: "2.0"
-    networks:
-      - agr-net
-
-    # --------------------------------------------------------------------------
-  # vLLM — OpenAI-compatible LLM serving (Qwen3.5-9B FP8)
-  # --------------------------------------------------------------------------
-  vllm:
-    image: vllm/vllm-openai:v0.17.0  # Updated: Required for Qwen3.5 parsers
-    container_name: agr-vllm
+      test: ["CMD", "neo4j", "status"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
     restart: unless-stopped
+
+  vllm-ingest:
+    image: vllm/vllm-openai:v0.27.0
     ports:
-      - "${VLLM_PORT:-8000}:8000"
+      - "8000:8000"
     environment:
-      <<: *common-env
-      HUGGING_FACE_HUB_TOKEN: "${HF_TOKEN:-}"
-      VLLM_USE_RUST_FRONTEND: "1"    # New: Enables Rust frontend for lower latency
-    command: >
-      RedHatAI/Qwen3.5-9B-FP8-dynamic
-      --host 0.0.0.0
-      --port 8000
-      --trust-remote-code
-      --kv-cache-dtype fp8
-      --tensor-parallel-size ${VLLM_TP_SIZE:-1}
-      --max-model-len 32768
-      --enable-auto-tool-choice
-      --tool-call-parser qwen3_coder
-      --reasoning-parser qwen3
-      --gpu-memory-utilization 0.90
-      --disable-log-requests
+      - VLLM_USE_RUST_FRONTEND=1
+      - HUGGING_FACE_HUB_TOKEN=${HF_TOKEN:-}
     volumes:
-      - hf_cache:/root/.cache/huggingface
+      - model_cache:/root/.cache/huggingface
+    command: >
+      --model Qwen/Qwen3.5-9B-FP8-dynamic
+      --kv-cache-dtype fp8
+      --enable-prefix-caching
+      --enable-chunked-prefill
+      --reasoning-parser qwen3
+      --max-model-len 16384
+      --max-num-seqs 32
+      --gpu-memory-utilization 0.50
     deploy:
       resources:
         reservations:
           devices:
             - driver: nvidia
-              count: ${VLLM_GPU_COUNT:-1}  # Updated: 1x 24GB GPU is sufficient for 9B FP8
+              count: all
               capabilities: [gpu]
-        limits:
-          memory: 32G
-          cpus: "8.0"
     healthcheck:
-      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=5)\" || exit 1"]
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 30s
       timeout: 10s
-      retries: 20
-      start_period: 180s
-    networks:
-      - agr-net
+      retries: 5
+    restart: unless-stopped
 
+  vllm-answer:
+    image: vllm/vllm-openai:v0.27.0
+    ports:
+      - "8001:8000"
+    environment:
+      - VLLM_USE_RUST_FRONTEND=1
+      - HUGGING_FACE_HUB_TOKEN=${HF_TOKEN:-}
+    volumes:
+      - model_cache:/root/.cache/huggingface
+    command: >
+      --model Qwen/Qwen3.5-4B-FP8-dynamic
+      --enable-auto-tool-choice
+      --tool-call-parser qwen3_coder
+      --reasoning-parser qwen3
+      --kv-cache-dtype fp8
+      --enable-prefix-caching
+      --enable-chunked-prefill
+      --max-model-len 12288
+      --max-num-seqs 64
+      --gpu-memory-utilization 0.40
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    restart: unless-stopped
 
+  vllm-ocr:
+    image: unlimited-ocr/vllm:latest
+    profiles: ["ocr"]
+    ports:
+      - "8002:8000"
+    environment:
+      - VLLM_USE_RUST_FRONTEND=1
+    volumes:
+      - model_cache:/root/.cache/huggingface
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
 
-# ----------------------------------------------------------------------------
-# Volumes
-# ----------------------------------------------------------------------------
+  app:
+    build:
+      context: .
+      dockerfile: docker/app/Dockerfile
+    ports:
+      - "8080:8080"
+    depends_on:
+      qdrant:
+        condition: service_healthy
+      neo4j:
+        condition: service_healthy
+      vllm-ingest:
+        condition: service_healthy
+      vllm-answer:
+        condition: service_healthy
+    env_file:
+      - .env
+    restart: unless-stopped
+
 volumes:
-  qdrant_data:
-    driver: local
+  qdrant_storage:
   neo4j_data:
-    driver: local
   neo4j_logs:
-    driver: local
   neo4j_plugins:
-    driver: local
-  hf_cache:
-    driver: local
-  upload_data:
-    driver: local
-
-# ----------------------------------------------------------------------------
-# Networks
-# ----------------------------------------------------------------------------
-networks:
-  agr-net:
-    driver: bridge
-    name: agr-net
+  model_cache:
